@@ -7,4 +7,6 @@ cl tagger的控制台批量处理脚本
 https://huggingface.co/spaces/cella110n/cl_tagger
 https://huggingface.co/cella110n/cl_tagger
 
-使用时请手动下载https://huggingface.co/cella110n/cl_tagger模型，整体克隆即可，建议自行用UV创建虚拟环境，然后记得改一下appv2里面模型路径
+使用时请手动下载
+https://huggingface.co/cella110n/cl_tagger
+模型，整体克隆即可，建议自行用UV创建虚拟环境，然后记得改一下appv2里面模型路径
