@@ -1,8 +1,7 @@
---extra-index-url https://download.pytorch.org/whl/cu126
 torch
 torchvision
 torchaudio
-onnxruntime-gpu==1.19.0 # Removed ONNX Runtime
+onnxruntime-directml
 safetensors
 transformers
 timm # Needed for EVA02 base model
@@ -12,4 +11,5 @@ matplotlib
 requests
 gradio>=4.43.0
 pydantic==2.10.6 # Removed pydantic pin, let Gradio handle
+
 huggingface_hub 
