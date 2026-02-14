@@ -6,20 +6,15 @@ import json
 import time
 
 # ==================== 配置区 ====================
-# 支持的模型列表（键是显示名称，值是相对于 models 的子文件夹名）
 MODEL_OPTIONS = {
     "cl_tagger_1_02": "cl_tagger_1_02",
     "cl_eva02_tagger_v1_250812": "cl_eva02_tagger_v1_250812",
     "cl_eva02_tagger_v1_250807": "cl_eva02_tagger_v1_250807",
-    # 添加更多版本时，在这里加一行即可
 }
 
 DEFAULT_MODEL_KEY = "cl_tagger_1_02"
-MODELS_BASE_DIR = "cl_tagger"  # 模型根目录，相对于脚本所在位置
-
-# 支持的图片扩展名
+MODELS_BASE_DIR = "cl_tagger" 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif"}
-
 # ===============================================
 
 def pil_ensure_rgb(image: Image.Image) -> Image.Image:
@@ -33,8 +28,7 @@ def pil_ensure_rgb(image: Image.Image) -> Image.Image:
 
 def pil_pad_square(image: Image.Image) -> Image.Image:
     width, height = image.size
-    if width == height:
-        return image
+    if width == height: return image
     new_size = max(width, height)
     new_image = Image.new("RGB", (new_size, new_size), (255, 255, 255))
     paste_position = ((new_size - width) // 2, (new_size - height) // 2)
@@ -46,8 +40,8 @@ def preprocess_image(image: Image.Image, target_size=(448, 448)):
     image = pil_pad_square(image)
     image_resized = image.resize(target_size, Image.BICUBIC)
     img_array = np.array(image_resized, dtype=np.float32) / 255.0
-    img_array = img_array.transpose(2, 0, 1)  # HWC -> CHW
-    img_array = img_array[::-1, :, :]  # RGB -> BGR (根据原项目经验)
+    img_array = img_array.transpose(2, 0, 1)  
+    img_array = img_array[::-1, :, :]  # RGB -> BGR
     mean = np.array([0.5, 0.5, 0.5], dtype=np.float32).reshape(3, 1, 1)
     std = np.array([0.5, 0.5, 0.5], dtype=np.float32).reshape(3, 1, 1)
     img_array = (img_array - mean) / std
@@ -57,7 +51,6 @@ def preprocess_image(image: Image.Image, target_size=(448, 448)):
 def load_tag_mapping(mapping_path: str):
     with open(mapping_path, 'r', encoding='utf-8') as f:
         tag_mapping_data = json.load(f)
-
     if isinstance(tag_mapping_data, dict) and "idx_to_tag" in tag_mapping_data:
         idx_to_tag = {int(k): v for k, v in tag_mapping_data["idx_to_tag"].items()}
         tag_to_category = tag_mapping_data["tag_to_category"]
@@ -69,155 +62,132 @@ def load_tag_mapping(mapping_path: str):
     names = [None] * (max(idx_to_tag.keys()) + 1)
     categories = {"rating": [], "general": [], "artist": [], "character": [], "copyright": [], "meta": [], "quality": [], "model": []}
     for idx, tag in idx_to_tag.items():
-        if idx >= len(names):
-            names.extend([None] * (idx - len(names) + 1))
+        if idx >= len(names): names.extend([None] * (idx - len(names) + 1))
         names[idx] = tag
-        cat = tag_to_category.get(tag, "general")
-        if cat.lower() in categories:
-            categories[cat.lower()].append(idx)
+        cat = tag_to_category.get(tag, "general").lower()
+        if cat in categories: categories[cat].append(idx)
 
     for key in categories:
         categories[key] = np.array(categories[key], dtype=np.int64)
-
     return names, categories
 
-def get_tags(probs: np.ndarray, names: list, categories: dict, gen_threshold: float, char_threshold: float):
+def get_tags(probs, names, categories, gen_threshold, char_threshold):
     tags = []
-    # Rating & Quality: 取最高概率
+    # 评分和质量标签
     for cat in ["rating", "quality"]:
         if len(categories[cat]) > 0:
             cat_probs = probs[categories[cat]]
             best_idx = np.argmax(cat_probs)
             global_idx = categories[cat][best_idx]
-            if global_idx < len(names) and names[global_idx] is not None:
+            if global_idx < len(names) and names[global_idx]:
                 tags.append(names[global_idx].replace("_", " "))
 
-    # 其他类别：阈值过滤
+    # 通用标签
     threshold_map = {
         "general": gen_threshold, "meta": gen_threshold, "model": gen_threshold,
         "character": char_threshold, "copyright": char_threshold, "artist": char_threshold
     }
     for cat, thresh in threshold_map.items():
-        if len(categories[cat]) == 0:
-            continue
+        if len(categories[cat]) == 0: continue
         cat_probs = probs[categories[cat]]
-        mask = cat_probs >= thresh
-        selected_local = np.where(mask)[0]
+        selected_local = np.where(cat_probs >= thresh)[0]
         for local_idx in selected_local:
             global_idx = categories[cat][local_idx]
-            if global_idx < len(names) and names[global_idx] is not None:
+            if global_idx < len(names) and names[global_idx]:
                 tag = names[global_idx].replace("_", " ")
-                # 过滤无用 meta tag
                 if cat == "meta" and any(x in tag.lower() for x in ['id', 'commentary', 'request', 'mismatch']):
                     continue
                 tags.append(tag)
-
     return ", ".join(tags)
 
 def main():
-    print("=== CL EVA02 ONNX 批量打标工具 ===\n")
+    print("=== CL EVA02 ONNX 批量打标工具 (DirectML 版) ===")
+    print("提示：此版本不依赖 cuDNN，适合 RTX 5090 快速部署\n")
 
-    # 1. 选择模型
+    # 1. 模型选择
     print("可用模型：")
     for i, key in enumerate(MODEL_OPTIONS.keys(), 1):
         print(f"  {i}. {key}")
-    while True:
-        choice = input(f"\n请选择模型 [默认 {DEFAULT_MODEL_KEY}]: ").strip()
-        if choice == "":
-            model_key = DEFAULT_MODEL_KEY
-            break
-        if choice in MODEL_OPTIONS:
-            model_key = choice
-            break
-        try:
-            idx = int(choice) - 1
-            if 0 <= idx < len(MODEL_OPTIONS):
-                model_key = list(MODEL_OPTIONS.keys())[idx]
-                break
-        except:
-            pass
-        print("输入无效，请重新选择。")
+    choice = input(f"\n请选择模型 [默认 {DEFAULT_MODEL_KEY}]: ").strip()
+    model_key = list(MODEL_OPTIONS.keys())[int(choice)-1] if choice.isdigit() and 0 < int(choice) <= len(MODEL_OPTIONS) else DEFAULT_MODEL_KEY
 
     model_folder = MODEL_OPTIONS[model_key]
     model_path = os.path.join(MODELS_BASE_DIR, model_folder, "model.onnx")
     mapping_path = os.path.join(MODELS_BASE_DIR, model_folder, "tag_mapping.json")
 
     if not os.path.exists(model_path):
-        print(f"✗ 模型文件不存在: {model_path}")
+        print(f"✗ 错误：找不到模型文件 {model_path}")
         return
-    if not os.path.exists(mapping_path):
-        print(f"✗ tag_mapping.json 不存在: {mapping_path}")
-        return
-
-    print(f"✓ 加载模型: {model_key}")
 
     # 2. 加载标签
     names, categories = load_tag_mapping(mapping_path)
 
-    # 3. 设置阈值
-    try:
-        gen_thresh = float(input("\nGeneral/Meta/Model 阈值 [默认 0.55]: ").strip() or "0.55")
-        char_thresh = float(input("Character/Copyright/Artist 阈值 [默认 0.60]: ").strip() or "0.60")
-    except ValueError:
-        print("阈值输入无效，使用默认值")
-        gen_thresh, char_thresh = 0.55, 0.60
-
-    # 4. 输入文件夹
+    # 3. 参数输入
+    gen_thresh = float(input("\nGeneral 阈值 [默认 0.55]: ").strip() or "0.55")
+    char_thresh = float(input("Character 阈值 [默认 0.60]: ").strip() or "0.60")
     folder = input("\n请输入图片文件夹路径: ").strip().strip('"\'')
-    if not os.path.isdir(folder):
-        print("✗ 路径不存在或不是文件夹")
-        return
-
     recursive = input("是否递归处理子文件夹？(y/N): ").strip().lower() == 'y'
 
-    # 5. 收集图片文件
+    # 4. 收集图片
     image_files = []
-    walk = os.walk(folder)
-    for root, _, files in walk:
+    for root, _, files in os.walk(folder):
         for f in files:
             if os.path.splitext(f.lower())[1] in IMAGE_EXTENSIONS:
                 image_files.append(os.path.join(root, f))
-        if not recursive:
-            break  # 只处理顶级文件夹
-
+        if not recursive: break
+    
     if not image_files:
-        print("✗ 指定文件夹中未找到支持的图片文件")
+        print("✗ 文件夹中未找到支持的图片")
         return
 
-    print(f"\n找到 {len(image_files)} 张图片，开始处理...\n")
+    # 5. 初始化 DirectML Session
+    # DirectML 会自动寻找系统中支持 DX12 的最强显卡 (RTX 5090)
+    print("\n正在初始化推理引擎 (DirectML)...")
+    try:
+        # 强制指定使用 DirectML
+        providers = ['DmlExecutionProvider', 'CPUExecutionProvider']
+        session = ort.InferenceSession(model_path, providers=providers)
+        
+        actual_provider = session.get_providers()[0]
+        print(f"✓ 推理引擎加载成功: {actual_provider}")
+    except Exception as e:
+        print(f"✗ 无法启动 DirectML: {e}")
+        return
 
-    # 6. 加载 ONNX Session（只加载一次）
-    providers = ['CUDAExecutionProvider'] if 'CUDAExecutionProvider' in ort.get_available_providers() else ['CPUExecutionProvider']
-    session = ort.InferenceSession(model_path, providers=providers)
     input_name = session.get_inputs()[0].name
     output_name = session.get_outputs()[0].name
 
-    success = 0
-    failed = 0
+    # 6. 批量处理
+    print(f"\n开始处理 {len(image_files)} 张图片...\n")
+    success, failed = 0, 0
+    start_time = time.time()
 
     for idx, img_path in enumerate(image_files, 1):
         try:
-            image = Image.open(img_path).convert("RGB")
-            input_tensor = preprocess_image(image)
-            input_tensor = input_tensor.astype(np.float32)
-
+            image = Image.open(img_path)
+            input_tensor = preprocess_image(image).astype(np.float32)
+            
+            # 执行推理
             outputs = session.run([output_name], {input_name: input_tensor})[0]
-            probs = 1 / (1 + np.exp(-np.clip(outputs[0], -30, 30)))  # stable sigmoid
-
+            
+            # Sigmoid 处理
+            probs = 1 / (1 + np.exp(-np.clip(outputs[0], -30, 30)))
             tags_text = get_tags(probs, names, categories, gen_thresh, char_thresh)
-
-            txt_path = os.path.splitext(img_path)[0] + ".txt"
-            with open(txt_path, "w", encoding="utf-8") as f:
+            
+            # 保存结果
+            with open(os.path.splitext(img_path)[0] + ".txt", "w", encoding="utf-8") as f:
                 f.write(tags_text)
-
+            
             print(f"[{idx}/{len(image_files)}] ✓ {os.path.basename(img_path)}")
             success += 1
-
         except Exception as e:
-            print(f"[{idx}/{len(image_files)}] ✗ {os.path.basename(img_path)} -> {e}")
+            print(f"[{idx}/{len(image_files)}] ✗ {os.path.basename(img_path)}: {e}")
             failed += 1
 
-    print(f"\n=== 完成！成功: {success} 张，失败: {failed} 张 ===")
+    total_time = time.time() - start_time
+    print(f"\n=== 任务完成 ===")
+    print(f"总计用时: {total_time:.2f}秒 (平均 {total_time/len(image_files):.2f}秒/张)")
+    print(f"成功: {success}, 失败: {failed}")
     input("\n按 Enter 键退出...")
 
 if __name__ == "__main__":
